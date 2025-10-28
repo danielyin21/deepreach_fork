@@ -1173,3 +1173,184 @@ class MultiVehicleCollision(Dynamics):
             'y_axis_idx': 1,
             'z_axis_idx': 6,
         }
+
+
+# ----- ------------------------------------------------------ Quad2D Reach-Avoid (continuous-time) ------------------------------------------------------------------
+# State:   s = [x, z, theta, vx, vz, omega]
+# Control: u = [u1_thrust (N), u2_torque (N·m)]
+# Params:  m=1.0 kg, Iyy=0.1 kg·m^2, g=-9.81 m/s^2
+# Bounds:  u1 ∈ [0, 19.62], u2 ∈ [-0.05, 0.05]
+
+# ---------------------------------------------------------------
+# Quad2DReachAvoid (reach-avoid, 6D quad: [x,z,th,vx,vz,om])
+# Tunables: obstacle center & radius only; everything else fixed.
+# ---------------------------------------------------------------
+class Quad2DReachAvoid(Dynamics):
+    def __init__(self, obs_cx: float, obs_cz: float, obs_r: float, set_mode: str):
+        # ----- fixed physical params & control limits -----
+        self.m   = 1.0
+        self.Iyy = 0.10
+        self.g   = -9.81
+        self.u1_min, self.u1_max = 0.0, 19.62      # thrust (N)
+        self.u2_min, self.u2_max = -0.05, 0.05     # torque (N·m)
+
+        # ----- tunable obstacle (unsafe disk) -----
+        self.obs_cx = float(obs_cx)
+        self.obs_cz = float(obs_cz)
+        self.obs_r  = float(obs_r)
+
+        # ----- fixed goal tube (target around (gx,gz,0,0,0,0)) -----
+        self.goal_x, self.goal_z = 4.5, 2.5
+        self.goal_pos_tol = 0.2
+        self.goal_th_tol  = 0.1
+        self.goal_vel_tol = 0.1
+        self.goal_om_tol  = 0.1
+
+        # plotting / sampling ranges
+        self._range = dict(
+            x =(0.0, 5.0), z =(0.0, 5.0),
+            th=(-math.pi, math.pi), vx=(-3.0, 3.0),
+            vz=(-3.0, 3.0), om=(-1.0, 1.0),
+        )
+        state_mean = [2.5, 2.5, 0.0, 0.0, 0.0, 0.0]
+        state_var  = [2.5, 2.5, math.pi, 3.0, 3.0, 1.0]
+
+        super().__init__(
+            loss_type='brat_hjivi',          # reach-avoid loss uses reach_fn & avoid_fn
+            set_mode=set_mode,               # 'reach' or 'avoid' (controls H sign)
+            state_dim=6, input_dim=7, control_dim=2, disturbance_dim=0,
+            state_mean=state_mean, state_var=state_var,
+            value_mean=0.0, value_var=1.0, value_normto=0.02,
+            deepreach_model="exact",
+        )
+
+        # indices
+        self.IX, self.IZ, self.ITH, self.IVX, self.IVZ, self.IOM = range(6)
+
+    # ---------------- API: ranges & angle wrap ----------------
+    def state_test_range(self):
+        return [
+            [*self._range["x"]],
+            [*self._range["z"]],
+            [*self._range["th"]],
+            [*self._range["vx"]],
+            [*self._range["vz"]],
+            [*self._range["om"]],
+        ]
+
+    def equivalent_wrapped_state(self, state):
+        s = state.clone()
+        s[..., self.ITH] = ((s[..., self.ITH] + math.pi) % (2*math.pi)) - math.pi
+        return s
+
+    # ---------------- dynamics ----------------
+    def dsdt(self, state, control, disturbance):
+        th = state[..., self.ITH]
+        vx = state[..., self.IVX]
+        vz = state[..., self.IVZ]
+        om = state[..., self.IOM]
+        u1 = control[..., 0]
+        u2 = control[..., 1]
+
+        ds = torch.zeros_like(state)
+        ds[..., self.IX]  = vx
+        ds[..., self.IZ]  = vz
+        ds[..., self.ITH] = om
+        ds[..., self.IVX] = -(torch.sin(th) / self.m) * u1
+        ds[..., self.IVZ] =  self.g + (torch.cos(th) / self.m) * u1
+        ds[..., self.IOM] =  (1.0 / self.Iyy) * u2
+        return ds
+
+    # ---------------- reach / avoid sets ----------------
+    def reach_fn(self, state):
+        s  = self.equivalent_wrapped_state(state)
+        x  = s[..., self.IX]; z  = s[..., self.IZ]
+        th = s[..., self.ITH]; vx = s[..., self.IVX]
+        vz = s[..., self.IVZ]; om = s[..., self.IOM]
+        pos_phi = torch.sqrt((x - self.goal_x)**2 + (z - self.goal_z)**2) - self.goal_pos_tol
+        th_phi  = torch.abs(th) - self.goal_th_tol
+        vx_phi  = torch.abs(vx) - self.goal_vel_tol
+        vz_phi  = torch.abs(vz) - self.goal_vel_tol
+        om_phi  = torch.abs(om) - self.goal_om_tol
+        return torch.maximum(pos_phi, torch.maximum(th_phi, torch.maximum(vx_phi, torch.maximum(vz_phi, om_phi))))
+
+    def avoid_fn(self, state):
+        x = state[..., self.IX]; z = state[..., self.IZ]
+        return torch.sqrt((x - self.obs_cx)**2 + (z - self.obs_cz)**2) - self.obs_r
+
+    def boundary_fn(self, state):
+        # standard reach-avoid boundary: max(reach, -avoid) (BRT)
+        return torch.maximum(self.reach_fn(state), -self.avoid_fn(state))
+
+    # ---------------- cost & sampling ----------------
+    def cost_fn(self, state_traj):
+        # min_t max{ reach(x_t),  max_{k<=t}[-avoid(x_k)] }  (pattern used elsewhere) :contentReference[oaicite:6]{index=6}
+        r = self.reach_fn(state_traj)
+        a = self.avoid_fn(state_traj)
+        return torch.min(torch.maximum(r, torch.cummax(-a, dim=-1).values), dim=-1).values
+
+    def sample_target_state(self, num_samples: int):
+        # simple sampler inside the goal tube
+        lo = torch.tensor([self.goal_x - self.goal_pos_tol,
+                           self.goal_z - self.goal_pos_tol,
+                           -self.goal_th_tol, -self.goal_vel_tol, -self.goal_vel_tol, -self.goal_om_tol])
+        hi = torch.tensor([self.goal_x + self.goal_pos_tol,
+                           self.goal_z + self.goal_pos_tol,
+                           +self.goal_th_tol, +self.goal_vel_tol, +self.goal_vel_tol, +self.goal_om_tol])
+        lo = lo.to(torch.float32); hi = hi.to(torch.float32)
+        return lo + torch.rand(num_samples, self.state_dim)*(hi - lo)
+
+    # ---------------- Hamiltonian & optimal control ----------------
+    def hamiltonian(self, state, dvds):
+        th = state[..., self.ITH]
+        vx = state[..., self.IVX]
+        vz = state[..., self.IVZ]
+        om = state[..., self.IOM]
+
+        px  = dvds[..., self.IX]
+        pz  = dvds[..., self.IZ]
+        pth = dvds[..., self.ITH]
+        pvx = dvds[..., self.IVX]
+        pvz = dvds[..., self.IVZ]
+        pom = dvds[..., self.IOM]
+
+        H_free = px*vx + pz*vz + pth*om + pvz*self.g
+        c1 = ((-pvx*torch.sin(th)) + (pvz*torch.cos(th))) / self.m
+        c2 =  (pom / self.Iyy)
+
+        # reach ⇒ minimize; avoid ⇒ maximize (same sign logic used in other dyns)
+        if self.set_mode == "reach":
+            u1 = torch.where(c1 > 0.0, self.u1_min, self.u1_max)
+            u2 = torch.where(c2 > 0.0, self.u2_min, self.u2_max)
+        else:
+            u1 = torch.where(c1 > 0.0, self.u1_max, self.u1_min)
+            u2 = torch.where(c2 > 0.0, self.u2_max, self.u2_min)
+
+        return H_free + c1*u1 + c2*u2
+
+    def optimal_control(self, state, dvds):
+        th = state[..., self.ITH]
+        pvx = dvds[..., self.IVX]
+        pvz = dvds[..., self.IVZ]
+        pom = dvds[..., self.IOM]
+        c1 = ((-pvx*torch.sin(th)) + (pvz*torch.cos(th))) / self.m
+        c2 =  (pom / self.Iyy)
+        if self.set_mode == "reach":
+            u1 = torch.where(c1 > 0.0, self.u1_min, self.u1_max)
+            u2 = torch.where(c2 > 0.0, self.u2_min, self.u2_max)
+        else:
+            u1 = torch.where(c1 > 0.0, self.u1_max, self.u1_min)
+            u2 = torch.where(c2 > 0.0, self.u2_max, self.u2_min)
+        return torch.stack([u1, u2], dim=-1)
+
+    def optimal_disturbance(self, state, dvds):
+        return 0
+
+    # ---------------- viz config ----------------
+    def plot_config(self):
+        mid = {k:(a+b)/2 for k,(a,b) in self._range.items()}
+        return {
+            'state_slices': [mid['x'], mid['z'], 0.0, 0.0, 0.0, 0.0],
+            'state_labels': ['x', 'z', r'$\theta$', r'$v_x$', r'$v_z$', r'$\omega$'],
+            'x_axis_idx': 0, 'y_axis_idx': 1, 'z_axis_idx': 2,
+        }
