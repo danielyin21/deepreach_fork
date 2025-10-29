@@ -5,14 +5,14 @@ import matplotlib.pyplot as plt
 import inspect
 
 # ==== USER SETTINGS (edit as needed) ====
-EXPERIMENT_DIR = "deep_reach/deepreach_fork/runs/quad2d_reachavoid_v1"   # folder that contains training/ and orig_opt.pickle
-CHECKPOINT = 100000                                # -1 -> model_final.pth, else integer epoch number
+EXPERIMENT_DIR = "deep_reach/runs/quad2d_reachavoid_v0"   # folder that contains training/ and orig_opt.pickle
+CHECKPOINT = 150000                                # -1 -> model_final.pth, else integer epoch number
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 DT = 0.05                                      # simulation step [s]
-HORIZON = 10.0                                  # max sim time [s]
-NUM_ROLLOUTS = 50                              # how many trajectories to simulate
-SEED = 0                                       # reproducibility
+HORIZON = 5.0                                  # max sim time [s]
+NUM_ROLLOUTS = 100                              # how many trajectories to simulate
+SEED = 100                                       # reproducibility
 ONLY_START_IN_SAFE_SET = True                  # filter starts with V(0,x) <= 0
 OVERSAMPLE_FACTOR = 20                         # for safe-start filtering
 

@@ -1175,7 +1175,7 @@ class MultiVehicleCollision(Dynamics):
         }
 
 
-# ----- ------------------------------------------------------ Quad2D Reach-Avoid (continuous-time) ------------------------------------------------------------------
+# ----------------------------------------------------------- Quad2D Reach-Avoid (continuous-time) ------------------------------------------------------------------
 # State:   s = [x, z, theta, vx, vz, omega]
 # Control: u = [u1_thrust (N), u2_torque (N·m)]
 # Params:  m=1.0 kg, Iyy=0.1 kg·m^2, g=-9.81 m/s^2
@@ -1216,7 +1216,7 @@ class Quad2DReachAvoid(Dynamics):
         state_var  = [2.5, 2.5, math.pi, 3.0, 3.0, 1.0]
 
         super().__init__(
-            loss_type='brat_hjivi',          # reach-avoid loss uses reach_fn & avoid_fn
+            loss_type='brt_hjivi',          # reach-avoid loss uses reach_fn & avoid_fn
             set_mode=set_mode,               # 'reach' or 'avoid' (controls H sign)
             state_dim=6, input_dim=7, control_dim=2, disturbance_dim=0,
             state_mean=state_mean, state_var=state_var,

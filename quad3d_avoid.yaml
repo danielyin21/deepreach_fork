@@ -1,7 +1,7 @@
 mode: train
-experiment_name: quad2d_reachavoid_avoid
+experiment_name: quad3d_avoid_v0
 experiment_class: DeepReach
-dynamics_class: Quad2DReachAvoid
+dynamics_class: Quadrotor
 minWith: target
 
 # num_epochs: 150000
@@ -11,10 +11,10 @@ minWith: target
 # numpoints: 65000
 # steps_til_summary: 2000
 
-tMax: 5.0
+tMax: 10.0
 
-obs_cx: 2.5
-obs_cz: 2.5
-obs_r: 1.0
+# obs_cx: 2.5
+# obs_cz: 2.5
+# obs_r: 1.0
 
 set_mode: avoid
