@@ -268,74 +268,88 @@ class Air3D(Dynamics):
         }
 
 class Dubins3D(Dynamics):
-    def __init__(self, goalR:float, velocity:float, omega_max:float, angle_alpha_factor:float, set_mode:str, freeze_model: bool):
-        self.goalR = goalR
-        self.velocity = velocity
-        self.omega_max = omega_max
-        self.angle_alpha_factor = angle_alpha_factor
-        self.freeze_model = freeze_model
+    def __init__(self, obs_center_x: float, obs_center_y: float,collisionR: float, velocity: float, omega_max: float, angle_alpha_factor: float = 1.0, freeze_model: bool = False):
+        self.obs_center = torch.tensor([obs_center_x, obs_center_y], dtype=torch.float32)
+        self.collisionR = float(collisionR)
+        self.velocity = float(velocity)
+        self.omega_max = float(omega_max)
+        self.angle_alpha_factor = float(angle_alpha_factor)
+        self.freeze_model = bool(freeze_model)
+
         super().__init__(
-            loss_type='brt_hjivi', set_mode=set_mode,
-            state_dim=3, input_dim=4, control_dim=1, disturbance_dim=0,
-            state_mean=[0, 0, 0], 
-            state_var=[1, 1, self.angle_alpha_factor*math.pi],
-            value_mean=0.25, 
-            value_var=0.5, 
+            loss_type='brt_hjivi',
+            set_mode='avoid',
+            state_dim=3,
+            input_dim=4,                  # state_dim + control_dim (no disturbance)
+            control_dim=1,
+            disturbance_dim=0,
+            state_mean=[0.0, 0.0, 0.0],
+            state_var=[1.0, 1.0, self.angle_alpha_factor * math.pi],
+            value_mean=0.25,
+            value_var=0.5,
             value_normto=0.02,
-            deepreach_model="exact"
+            deepreach_model="exact",
         )
 
+    # sampling/testing extents
     def state_test_range(self):
         return [
-            [-1, 1],
-            [-1, 1],
+            [-1.0, 1.0],
+            [-1.0, 1.0],
             [-math.pi, math.pi],
         ]
 
     def equivalent_wrapped_state(self, state):
         wrapped_state = torch.clone(state)
-        wrapped_state[..., 2] = (wrapped_state[..., 2] + math.pi) % (2*math.pi) - math.pi
+        wrapped_state[..., 2] = (wrapped_state[..., 2] + math.pi) % (2 * math.pi) - math.pi
         return wrapped_state
-        
-    # Dubins3D dynamics
-    # \dot x    = v \cos \theta
-    # \dot y    = v \sin \theta
-    # \dot \theta = u
+
+    # Continuous-time dynamics
+    # xdot = v cosθ, ydot = v sinθ, thetadot = u
     def dsdt(self, state, control, disturbance):
         if self.freeze_model:
-            raise NotImplementedError
-        dsdt = torch.zeros_like(state)
-        dsdt[..., 0] = self.velocity*torch.cos(state[..., 2])
-        dsdt[..., 1] = self.velocity*torch.sin(state[..., 2])
-        dsdt[..., 2] = control[..., 0]
-        return dsdt
-    
+            raise NotImplementedError("Model frozen; dsdt disabled.")
+        ds = torch.zeros_like(state)
+        th = state[..., 2]
+        u  = control[..., 0]
+        ds[..., 0] = self.velocity * torch.cos(th)
+        ds[..., 1] = self.velocity * torch.sin(th)
+        ds[..., 2] = u
+        return ds
+
+    # Keep-out set boundary: distance to obstacle center minus radius
     def boundary_fn(self, state):
-        return torch.norm(state[..., :2], dim=-1) - self.goalR
+        xy = state[..., :2]
+        return torch.norm(xy - self.obs_center.to(xy.device), dim=-1) - self.collisionR
 
     def sample_target_state(self, num_samples):
+        # Not used for pure avoid; you can implement obstacle-surface sampling if needed.
         raise NotImplementedError
-    
+
     def cost_fn(self, state_traj):
+        # min_t g(state_t) for BRT-HJIVI
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
-    
+
+    # Avoid-mode Hamiltonian (no disturbance):
+    # H = v (cosθ px + sinθ py) + ω_max |pθ|
     def hamiltonian(self, state, dvds):
         if self.freeze_model:
-            raise NotImplementedError
-        if self.set_mode == 'reach':
-            return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) - self.omega_max * torch.abs(dvds[..., 2]) 
-        elif self.set_mode == 'avoid':
-            return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 2])
+            raise NotImplementedError("Model frozen; H disabled.")
+        th = state[..., 2]
+        H = self.velocity * (torch.cos(th) * dvds[..., 0] + torch.sin(th) * dvds[..., 1])
+        H = H + self.omega_max * torch.abs(dvds[..., 2])
+        return H
 
+    # Bang–bang optimal control for avoid
+    # u* = + ω_max * sign(pθ)
     def optimal_control(self, state, dvds):
-        if self.set_mode == 'reach':
-            return (-self.omega_max*torch.sign(dvds[..., 2]))[..., None]
-        elif self.set_mode == 'avoid':
-            return (self.omega_max*torch.sign(dvds[..., 2]))[..., None]
+        u = self.omega_max * torch.sign(dvds[..., 2])
+        return u[..., None]
 
     def optimal_disturbance(self, state, dvds):
+        # none
         return 0
-    
+
     def plot_config(self):
         return {
             'state_slices': [0, 0, 0],
@@ -1352,5 +1366,5 @@ class Quad2DReachAvoid(Dynamics):
         return {
             'state_slices': [mid['x'], mid['z'], 0.0, 0.0, 0.0, 0.0],
             'state_labels': ['x', 'z', r'$\theta$', r'$v_x$', r'$v_z$', r'$\omega$'],
-            'x_axis_idx': 0, 'y_axis_idx': 1, 'z_axis_idx': 2,
+            'x_axis_idx': 0, 'y_axis_idx': 1, 'z_axis_idx': 3,
         }

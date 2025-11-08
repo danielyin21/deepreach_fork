@@ -1,0 +1,21 @@
+mode: train
+experiment_name: dubins_avoid_v3
+experiment_class: DeepReach
+dynamics_class: Dubins3D
+minWith: none
+
+num_epochs: 750_000
+# lr: 1e-4
+# num_hl: 3
+# num_nl: 512
+numpoints: 65000
+# steps_til_summary: 2000
+
+tMax: 10.0
+
+obs_center_x: 0.0                 # OBSTACLE_CENTER[0]
+obs_center_y: 0.0                 # OBSTACLE_CENTER[1]
+collisionR: 0.25           # OBSTACLE_RADIUS (+ BUFFER if you want the same margin)
+velocity: 0.2                     # V_REF (or V_BOUNDS[1])
+omega_max: 3.6                    # DELTA_BOUNDS[1]
+angle_alpha_factor: 1.0           # since θ ∈ [-π, π]
